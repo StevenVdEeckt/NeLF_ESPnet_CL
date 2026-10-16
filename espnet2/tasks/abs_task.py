@@ -18,6 +18,8 @@ from typing import Sequence
 from typing import Tuple
 from typing import Union
 
+import copy
+
 import humanfriendly
 import numpy as np
 import torch
@@ -418,6 +420,11 @@ class AbsTask(ABC):
             type=str2bool,
             help="Enable sharded training provided by fairscale",
         )
+        group.add_argument(
+            '--cl_method',
+            type=str,
+            default="",
+            help="Continual Learning method")
 
         group = parser.add_argument_group("cudnn mode related")
         group.add_argument(
@@ -702,6 +709,8 @@ class AbsTask(ABC):
 
         group.add_argument("--train_shape_file", type=str, action="append", default=[])
         group.add_argument("--valid_shape_file", type=str, action="append", default=[])
+        group.add_argument("--memory_shape_file", type=str, action="append", default=[])
+        group.add_argument("--collect_modes", type=str, default="", help="Modes (train, valid, memory) for collecting stats")
 
         group = parser.add_argument_group("Sequence iterator related")
         _batch_type_help = ""
@@ -721,6 +730,11 @@ class AbsTask(ABC):
             choices=list(BATCH_TYPES) + [None],
             help="If not given, the value of --batch_type is used",
         )
+        group.add_argument(
+            "--memory_batch_size",
+            type=int,
+            default=0,
+            help="Mini-batch size of the memory (if not provided, is equal to training batch size")
         group.add_argument("--fold_length", type=int, action="append", default=[])
         group.add_argument(
             "--sort_in_batch",
@@ -794,6 +808,12 @@ class AbsTask(ABC):
         )
         group.add_argument(
             "--valid_data_path_and_name_and_type",
+            type=str2triple_str,
+            action="append",
+            default=[],
+        )
+        group.add_argument(
+            "--memory_data_path_and_name_and_type",
             type=str2triple_str,
             action="append",
             default=[],
@@ -1212,6 +1232,33 @@ class AbsTask(ABC):
             else:
                 valid_key_file = None
 
+            # set memory iter
+            logging.info(f"CL_Method = {model.cl_method}")
+            logging.info(f"Hasattr({model.cl_method}, 'set_loader') = {hasattr(model.cl_method, 'set_loader')}")
+
+            if hasattr(model, 'cl_method') and model.cl_method and hasattr(model.cl_method, 'set_loader'):
+                if len(args.memory_shape_file) != 0:
+                    memory_key_file = args.memory_shape_file[0]
+                else:
+                    memory_key_file = None
+
+                if args.memory_batch_size < 1:
+                    args.memory_batch_size = args.batch_size
+
+                memory_iter=cls.build_streaming_iterator(
+                    data_path_and_name_and_type=args.memory_data_path_and_name_and_type,
+                    key_file=memory_key_file,
+                    batch_size=args.memory_batch_size,
+                    dtype=args.train_dtype,
+                    num_workers=args.num_workers,
+                    allow_variable_data_keys=args.allow_variable_data_keys,
+                    ngpu=args.ngpu,
+                    preprocess_fn=cls.build_preprocess_fn(args, train=False),
+                    collate_fn=cls.build_collate_fn(args, train=False),
+                )
+            else:
+                memory_iter=None
+
             collect_stats(
                 model=model,
                 train_iter=cls.build_streaming_iterator(
@@ -1236,10 +1283,12 @@ class AbsTask(ABC):
                     preprocess_fn=cls.build_preprocess_fn(args, train=False),
                     collate_fn=cls.build_collate_fn(args, train=False),
                 ),
+                memory_iter=memory_iter,
                 output_dir=output_dir,
                 ngpu=args.ngpu,
                 log_interval=args.log_interval,
                 write_collected_feats=args.write_collected_feats,
+                collect_modes=args.collect_modes,
             )
         else:
             # 6. Loads pre-trained model
@@ -1273,7 +1322,14 @@ class AbsTask(ABC):
                         convert_to_dual=args.convert_to_dual,
                     )
 
-            torch.save(model.state_dict(), output_dir / f"init_model.pth")
+
+            # update model in CL module (if required)
+            if hasattr(model, 'pass_model'):
+                model.pass_model(optimizers=optimizers)
+
+            if not os.path.isfile(str(output_dir) + '/init_model.pth'):
+                logging.info('storing at: %s' % (str(output_dir) + '/init_model.pth'))
+                torch.save(model.state_dict(), output_dir / f"init_model.pth")
 
             # 7. Build iterator factories
             if args.multiple_iterator:
@@ -1293,6 +1349,20 @@ class AbsTask(ABC):
                 distributed_option=distributed_option,
                 mode="valid",
             )
+
+            if hasattr(model, 'cl_method') and model.cl_method and hasattr(model.cl_method, 'set_loader'):
+                memory_args = copy.deepcopy(args)
+                if args.memory_batch_size >= 1:
+                    memory_args.batch_size = args.memory_batch_size
+
+                memory_iter_factory = cls.build_iter_factory(
+                        args=memory_args,
+                        distributed_option=distributed_option,
+                        mode="memory",
+                )
+                model.cl_method.set_loader(memory_iter_factory)
+
+
             if args.num_att_plot != 0:
                 plot_attention_iter_factory = cls.build_iter_factory(
                     args=args,
@@ -1410,6 +1480,22 @@ class AbsTask(ABC):
             num_batches = None
             num_iters_per_epoch = None
             train = False
+
+        elif mode == "memory":
+            preprocess_fn = cls.build_preprocess_fn(args, train=True)
+            collate_fn = cls.build_collate_fn(args, train=True)
+            data_path_and_name_and_type = args.memory_data_path_and_name_and_type
+            shape_files = args.memory_shape_file
+            batch_size = args.batch_size
+            batch_bins = args.batch_bins
+            batch_type = args.batch_type #args.memory_batch_type if args.memory_batch_type else args.batch_type
+            max_cache_size = args.max_cache_size
+            max_cache_fd = args.max_cache_fd
+            #allow_multi_rates = args.allow_multi_rates
+            distributed = distributed_option.distributed
+            num_batches = None
+            num_iters_per_epoch = args.num_iters_per_epoch
+            train = True
 
         elif mode == "plot_att":
             preprocess_fn = cls.build_preprocess_fn(args, train=False)

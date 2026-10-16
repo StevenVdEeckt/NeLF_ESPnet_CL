@@ -1,0 +1,31 @@
+Universe         = vanilla
+
+RequestCpus      = 3
+RequestMemory    = 23G
+Request_GPUs    = 1
++RequestWallTime = 250000
+Rank             = (machine == "gauss.esat.kuleuven.be") || (machine == "etrog.esat.kuleuven.be") || (machine == "fig.esat.kuleuven.be") || (machine == "hawberry.esat.kuleuven.be") || (machine == "z4-demo.esat.kuleuven.be") || (machine == "euler.esat.kuleuven.be") || (machine == "cauchy.esat.kuleuven.be") || (machine == "stadius-nc-4.esat.kuleuven.be") || (machine == "stadius-nc-5.esat.kuleuven.be")
+
+Requirements     = (HasSingularity) && (GPUs_DriverVersion >= 10.0) && (GPUs_Capability >= 3.5) && (has_avx == True) && (GPUs_GlobalMemoryMb >= 13000) && (machine != "spchcl21.esat.kuleuven.be") && (machine != "spchcl23.esat.kuleuven.be") && (machine != "andromeda.esat.kuleuven.be") && (machine != "spinel.esat.kuleuven.be") && (machine != "hematite.esat.kuleuven.be")  && (machine != "garnet.esat.kuleuven.be") && (machine != "estragon.esat.kuleuven.be")
+
+#NiceUser = true
+initialdir = /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/nelf
+
+periodic_release = (JobStatus == 5) && (NumHolds <= 4) && (HoldReasonCode != 1)
+
+periodic_hold = (JobStatus == 2) && (time() - EnteredCurrentStatus) > (20 * 60) && (CpusUsage =!= Undefined) && (CpusUsage < 0.05)
+periodic_hold_reason = "Job ran for more than 10 minutes with low CPU utilization (< 0.1 CPUs)"
+periodic_hold_subcode = 42
+
+Executable = /bin/bash
+Arguments  = /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/nelf/crisperwhisper/run_fiiat_prompt_tuning.sh
+
+#Executable       = /usr/bin/singularity
+#Arguments        = exec --nv /users/spraak/spch/prog/spch/ESPnet/singularity.sif /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/nelf/script_train.sh $(Process)
+
+
+Log          = condor_log/train_$(Process).log 
+Output       = condor_log/train_$(Process).out
+Error        = condor_log/train_$(Process).err
+
+Queue 1

@@ -1,0 +1,17 @@
+Bio_S1_B_13.0
+Bio_S1_B_14.0
+Bio_S1_B_15.0
+Bio_S1_B_16.0
+Bio_S1_B_8.0
+Bio_S1_B_9.0
+Bio_S2_A_10.1
+Bio_S2_A_4.1.5
+Bio_S2_A_6.10
+Bio_S2_A_6.3
+Bio_S2_A_7.6
+Bio_S3_A_7.4
+Exact_S7_A_11.0
+Exact_S7_A_16.0
+Geest_S5_A_7.1
+Geest_S6_C_4.1
+Geest_S6_C_6.0

@@ -58,6 +58,7 @@ class CTC(torch.nn.Module):
             )
 
         self.reduce = reduce
+        self.ctc_out = None
 
     def loss_fn(self, th_pred, th_target, th_ilen, th_olen) -> torch.Tensor:
         if self.ctc_type == "builtin":
@@ -136,7 +137,7 @@ class CTC(torch.nn.Module):
         else:
             raise NotImplementedError
 
-    def forward(self, hs_pad, hlens, ys_pad, ys_lens):
+    def forward(self, hs_pad, hlens, ys_pad, ys_lens, return_output=False):
         """Calculate CTC loss.
 
         Args:
@@ -147,6 +148,7 @@ class CTC(torch.nn.Module):
         """
         # hs_pad: (B, L, NProj) -> ys_hat: (B, L, Nvocab)
         ys_hat = self.ctc_lo(F.dropout(hs_pad, p=self.dropout_rate))
+        self.ctc_out = ys_hat
 
         if self.ctc_type == "gtnctc":
             # gtn expects list form for ys
@@ -160,6 +162,8 @@ class CTC(torch.nn.Module):
         loss = self.loss_fn(ys_hat, ys_true, hlens, ys_lens).to(
             device=hs_pad.device, dtype=hs_pad.dtype
         )
+        if return_output:
+            return loss, self.ctc_out
 
         return loss
 

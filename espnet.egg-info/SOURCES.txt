@@ -307,6 +307,8 @@ espnet2/bin/launch.py
 espnet2/bin/lm_calc_perplexity.py
 espnet2/bin/lm_train.py
 espnet2/bin/pack.py
+espnet2/bin/s2t_subtitle_inference.py
+espnet2/bin/s2t_subtitle_train.py
 espnet2/bin/split_scps.py
 espnet2/bin/st_inference.py
 espnet2/bin/st_inference_dual.py
@@ -413,6 +415,7 @@ espnet2/iterators/multiple_iter_factory.py
 espnet2/iterators/sequence_iter_factory.py
 espnet2/layers/__init__.py
 espnet2/layers/abs_normalize.py
+espnet2/layers/augmentation.py
 espnet2/layers/global_mvn.py
 espnet2/layers/inversible_interface.py
 espnet2/layers/label_aggregation.py
@@ -468,6 +471,7 @@ espnet2/tasks/enh_asr.py
 espnet2/tasks/gan_tts.py
 espnet2/tasks/hubert.py
 espnet2/tasks/lm.py
+espnet2/tasks/s2t_subs.py
 espnet2/tasks/st.py
 espnet2/tasks/st_dual.py
 espnet2/tasks/st_dual_v2.py
@@ -476,12 +480,17 @@ espnet2/tasks/tts.py
 espnet2/text/__init__.py
 espnet2/text/abs_tokenizer.py
 espnet2/text/build_tokenizer.py
+espnet2/text/build_tokenizer_v2.py
 espnet2/text/char_tokenizer.py
 espnet2/text/cleaner.py
+espnet2/text/hugging_face_token_id_converter.py
+espnet2/text/hugging_face_tokenizer.py
 espnet2/text/korean_cleaner.py
 espnet2/text/phoneme_tokenizer.py
 espnet2/text/sentencepiece_tokenizer.py
 espnet2/text/token_id_converter.py
+espnet2/text/whisper_token_id_converter.py
+espnet2/text/whisper_tokenizer.py
 espnet2/text/word_tokenizer.py
 espnet2/torch_utils/__init__.py
 espnet2/torch_utils/add_gradient_noise.py
@@ -503,6 +512,7 @@ espnet2/train/distributed_utils.py
 espnet2/train/gan_trainer.py
 espnet2/train/iterable_dataset.py
 espnet2/train/preprocessor.py
+espnet2/train/preprocessor_v2.py
 espnet2/train/reporter.py
 espnet2/train/trainer.py
 espnet2/tts/__init__.py

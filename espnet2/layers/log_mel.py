@@ -1,4 +1,4 @@
-#import librosa
+import librosa
 import torch
 from typing import Tuple
 
@@ -48,8 +48,8 @@ class LogMel(torch.nn.Module):
         # Note(kamo): The mel matrix of librosa is different from kaldi.
         
         # Jakob: No valid librosa install
-        #melmat = librosa.filters.mel(**_mel_options)
-        melmat = None
+        melmat = librosa.filters.mel(**_mel_options)
+        #melmat = None
         # melmat: (D2, D1) -> (D1, D2)
         self.register_buffer("melmat", torch.from_numpy(melmat.T).float())
 

@@ -14,6 +14,7 @@ from espnet2.asr.frontend.abs_frontend import AbsFrontend
 #from espnet2.layers.log_mel import LogMel
 #from espnet2.layers.stft import Stft
 from espnet2.utils.get_default_kwargs import get_default_kwargs
+import torch.nn.functional as F
 
 
 class DefaultFrontend(AbsFrontend):
@@ -38,6 +39,7 @@ class DefaultFrontend(AbsFrontend):
         htk: bool = False,
         frontend_conf: Optional[dict] = get_default_kwargs(Frontend),
         apply_stft: bool = True,
+        add_dummy_pitch: bool = False,
     ):
         assert check_argument_types()
         super().__init__()
@@ -77,8 +79,12 @@ class DefaultFrontend(AbsFrontend):
             htk=htk,
         )
         self.n_mels = n_mels
+        self.add_dummy_pitch = add_dummy_pitch
+        self.frontend_type = "default"
 
     def output_size(self) -> int:
+        if self.add_dummy_pitch:
+            return int(self.n_mels + 3)
         return self.n_mels
 
     def forward(
@@ -115,6 +121,9 @@ class DefaultFrontend(AbsFrontend):
         # input_power: (Batch, [Channel,] Length, Freq)
         #       -> input_feats: (Batch, Length, Dim)
         input_feats, _ = self.logmel(input_power, feats_lens)
+
+        if self.add_dummy_pitch:
+            input_feats = F.pad(input_feats, (0,3), mode='constant', value=0.0)
 
         return input_feats, feats_lens
 

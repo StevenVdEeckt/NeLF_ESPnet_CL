@@ -29,6 +29,8 @@ def collect_stats(
     ngpu: Optional[int],
     log_interval: Optional[int],
     write_collected_feats: bool,
+    memory_iter: DataLoader and Iterable[Tuple[List[str], Dict[str, torch.Tensor]]] = None,
+    collect_modes: str = '',
 ) -> None:
     """Perform on collect_stats mode.
 
@@ -39,8 +41,28 @@ def collect_stats(
     """
     assert check_argument_types()
 
+    if collect_modes:
+        collect_modes = collect_modes.split(",")
+    else:
+        collect_modes = ['train', 'valid']
+
+    iters = []
+    for mode in collect_modes:
+        assert mode in ['train', 'valid'] or 'memory' in mode
+        if mode == 'train':
+            iters.append(train_iter)
+        elif mode == 'valid':
+            iters.append(valid_iter)
+        elif 'memory' in mode and memory_iter is not None:
+            iters.append(memory_iter)
+
+    logging.info("Collecting stats...")
+    logging.info(f"--> modes = {collect_modes}")
+    logging.info(f"--> iters = {iters}")
+    logging.info(f"--> memory_iter = {memory_iter}")
+
     npy_scp_writers = {}
-    for itr, mode in zip([train_iter, valid_iter], ["train", "valid"]):
+    for itr, mode in zip(iters, collect_modes):
         if log_interval is None:
             try:
                 log_interval = max(len(itr) // 20, 10)
@@ -53,8 +75,7 @@ def collect_stats(
 
         with DatadirWriter(output_dir / mode) as datadir_writer:
             for iiter, (keys, batch) in enumerate(itr, 1):
-                batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
-
+                batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")   
                 # 1. Write shape file
                 for name in batch:
                     if name.endswith("_lengths"):
@@ -79,7 +100,7 @@ def collect_stats(
                         module_kwargs=batch,
                     )
 
-                # 3. Calculate sum and square sum
+                # 3. Calculate sum and square sum  
                 for key, v in data.items():
                     for i, (uttid, seq) in enumerate(zip(keys, v.cpu().numpy())):
                         # Truncate zero-padding region
@@ -116,11 +137,13 @@ def collect_stats(
                 sum=sum_dict[key],
                 sum_square=sq_dict[key],
             )
-
+ 
         # batch_keys and stats_keys are used by aggregate_stats_dirs.py
         with (output_dir / mode / "batch_keys").open("w", encoding="utf-8") as f:
             f.write(
                 "\n".join(filter(lambda x: not x.endswith("_lengths"), batch)) + "\n"
-            )
+            ) 
         with (output_dir / mode / "stats_keys").open("w", encoding="utf-8") as f:
             f.write("\n".join(sum_dict) + "\n")
+      
+

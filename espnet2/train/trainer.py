@@ -289,6 +289,11 @@ class Trainer:
                     distributed_option=distributed_option,
                 )
 
+
+            # if model has Weight-Based CL method, apply it
+            if hasattr(model, 'cl_method') and hasattr(model.cl_method, 'update_model'):
+                model.cl_method.update_model(model)
+
             with reporter.observe("valid") as sub_reporter:
                 cls.validate_one_epoch(
                     model=dp_model,
@@ -705,6 +710,7 @@ class Trainer:
                     break
 
             batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
+            batch['validate'] = True
             if no_forward_run:
                 continue
 

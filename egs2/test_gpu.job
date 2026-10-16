@@ -1,0 +1,26 @@
+Universe         = vanilla
+
+RequestCpus      = 4
+RequestMemory    = 20G
+Request_GPUs    = 1
++RequestWallTime = 250000
+Rank             = (machine != "andromeda.esat.kuleuven.be") && (machine != "spchcl23.esat.kuleuven.be") && (machine != "spchcl24.esat.kuleuven.be") && (machine != "spchcl21.esat.kuleuven.be")
+Requirements     = (HasSingularity) && (GPUs_DriverVersion >= 10.0) && (GPUs_Capability >= 3.5) && (has_avx == True) && (GPUs_GlobalMemoryMb >= 4000) && (machine != "jonen.esat.kuleuven.be") && (machine != "fuji.esat.kuleuven.be") && (machine != "jade.esat.kuleuven.be") && (machine != "spchcl21.esat.kuleuven.be") && (machine != "spchcl23.esat.kuleuven.be") && (machine != "spchcl24.esat.kuleuven.be") && (machine != "andromeda.esat.kuleuven.be") && (machine != "zulte.esat.kuleuven.be")
+
+periodic_release = (JobStatus == 5) && (NumHolds <= 8) && (HoldReasonCode != 1)
+
+periodic_hold = (JobStatus == 2) && (time() - EnteredCurrentStatus) > (8 * 60) && (CpusUsage =!= Undefined) && (CpusUsage < 0.05)
+periodic_hold_reason = "Job ran for more than 8 minutes with low CPU utilization (< 0.1 CPUs)"
+periodic_hold_subcode = 42
+
+NiceUser = true
+initialdir = /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/nelf
+
+Executable       = /usr/bin/singularity
+Arguments        = exec --nv /users/spraak/spch/prog/spch/ESPnet/singularity.sif /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/nelf/script_test_gpu.sh $(Process)
+
+Log          = condor_log/gpu_test_$(Process).log
+Output       = condor_log/gpu_test_$(Process).out
+Error        = condor_log/gpu_test_$(Process).err
+
+Queue 1

@@ -1,0 +1,21 @@
+Universe         = vanilla
+
+Request_GPUs     = 0
+RequestCpus      = 1
+RequestMemory    = 40G
++RequestWallTime = 150000
+Requirements     = (HasSingularity) && (has_avx == True) && (machine != "askoy.esat.kuleuven.be") && (machine != "molder.esat.kuleuven.be") && (machine != "banana.esat.kuleuven.be") && (machine != "nickeline.esat.kuleuven.be") && (machine != "aristoteles.esat.kuleuven.be") && (machine != "audioslave.esat.kuleuven.be") && (machine != "gojira.esat.kuleuven.be") && (machine != "z4-demo.esat.kuleuven.be") && (machine != "grape.esat.kuleuven.be") && (machine != "cherry.esat.kuleuven.be") && (machine != "avocado.esat.kuleuven.be")
+
+#NiceUser = true
+initialdir = /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/ml
+
+Executable       = /usr/bin/singularity
+Arguments        = exec /users/spraak/spch/prog/spch/ESPnet/singularity.img /esat/spchtemp/spchdisk_orig/svandere/espnet/asr/ml/script_preps2t.sh $(Process)
+
+Log          = condor_log/prep_$(Process).log
+Output       = condor_log/prep_$(Process).out
+Error        = condor_log/prep_$(Process).err
+
+
+
+Queue 1

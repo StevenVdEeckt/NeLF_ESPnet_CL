@@ -7,6 +7,8 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 
+import inspect
+
 import torch
 import torch.nn.functional as F
 from typeguard import check_argument_types
@@ -35,6 +37,8 @@ from espnet2.text.token_id_converter import TokenIDConverter
 
 from espnet2.st.espnet_model import ESPnetSTModel
 from espnet2.subtitling.weakly_supervised_loss import WeaklySupervisedLoss
+
+import espnet.nets.pytorch_backend.continual_learning3 as cl
 
 if LooseVersion(torch.__version__) >= LooseVersion("1.6.0"):
     from torch.cuda.amp import autocast
@@ -120,6 +124,7 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
         task_labels: bool = False,
         task_labels_v2: bool = False,
         fix_conditioning: bool = False,
+        cl_method: cl.CLMethod = None,
     ):
         assert check_argument_types()
         assert 0.0 <= asr_weight <= 1.0, "asr_weight should be [0.0, 1.0]"
@@ -268,9 +273,31 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
             lab = 'v1'
         if self.task_labels_v2:
             lab = 'v2'
-        print('SELF.TASK_LABELS: %s' % lab)
 
         self.fix_conditioning = fix_conditioning
+
+        self.cl_method = cl_method
+
+        # determine optional arguments for CL method (if not None and LossBased)
+        if self.cl_method is not None and (isinstance(self.cl_method, cl.LossBasedCL) or hasattr(self.cl_method, 'compute_loss')):
+            self.compute_cl_loss = True
+            opt_args = ['inputs', 'decoder_output', 'ctc_output', 'loss', 'encoder_output', 'task', 'encoder_out_lens']
+            cl_method_args = inspect.signature(self.cl_method.compute_loss).parameters
+            self.cl_opt_args = [arg for arg in opt_args if arg in cl_method_args]
+        else:
+            self.compute_cl_loss = False
+            self.cl_opt_args = []
+
+    # set the model of the CL algorithm (if required)
+    def pass_model(self, optimizers):
+        if self.cl_method and hasattr(self.cl_method, 'set_model'):
+            sig = inspect.signature(self.cl_method.set_model)
+            if 'optimizers' in sig.parameters:
+                self.cl_method.set_model(self, optimizers=optimizers)
+            else:
+                self.cl_method.set_model(self)
+        logging.info("Model: CL method has a model -> %s", str(hasattr(self.cl_method, 'old_model')))
+
 
     def forward(
         self,
@@ -280,6 +307,7 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
         text_lengths: torch.Tensor,
         src_text: Optional[torch.Tensor],
         src_text_lengths: Optional[torch.Tensor],
+        validate: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -341,8 +369,8 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
                 src_text_ctc = src_text
                 src_text_ctc_lengths = src_text_lengths
 
-            loss_ctc, cer_ctc = self._calc_ctc_loss(
-                encoder_out, encoder_out_lens, src_text_ctc, src_text_ctc_lengths, mask
+            loss_ctc, cer_ctc, out_ctc = self._calc_ctc_loss(
+                encoder_out, encoder_out_lens, src_text_ctc, src_text_ctc_lengths, mask, return_output=True
             )
 
             # Collect CTC branch stats
@@ -410,11 +438,11 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
             else:
                 loss_asr_att, acc_asr_att, cer_asr_att, \
                 wer_asr_att, loss_subs_att, acc_subs_att, _, \
-                loss_subtitle_ctc, cer_subtitle_ctc = \
+                loss_subtitle_ctc, cer_subtitle_ctc, decoder_output = \
                     self._calc_att_loss(encoder_out, encoder_out_lens,
                                         src_text, src_text_lengths,
                                         text, text_lengths,
-                                        mask_asr, mask_subs)
+                                        mask_asr, mask_subs, return_output=True)
 
         # 4. Loss computation
         #loss = self.ctc_weight * loss_ctc + self.asr_weight * loss_asr_att + self.subs_weight * loss_subs_att + self.subtitle_ctc_weight * loss_subtitle_ctc
@@ -423,8 +451,8 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
         if acc_asr_att is not None and acc_subs_att is not None:
             global_acc = self.asr_weight * acc_asr_att + self.subs_weight * acc_subs_att
 
+
         stats = dict(
-            loss=loss.detach() if type(loss) is not float else loss,
             loss_asr=loss_asr_att.detach() if type(loss_asr_att) is not float else loss_asr_att,
             loss_subs=loss_subs_att.detach() if type(loss_subs_att) is not float else loss_subs_att,
             loss_ctc=loss_ctc.detach() if type(loss_ctc) is not float else loss_ctc,
@@ -440,10 +468,180 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
             cer_subtitle_ctc=cer_subtitle_ctc,
         )
 
+
+        # 5. (optional) Add Continual Learning loss
+        if self.compute_cl_loss and not validate:
+            # add additional arguments
+            opt_args = {
+                    'inputs': {'speech': speech, 'speech_lengths': speech_lengths, 'text': text, 
+                        'text_lengths': text_lengths, 'src_text': src_text, 'src_text_lengths': src_text_lengths},
+                    'encoder_output': encoder_out,
+                    'encoder_out_lens': encoder_out_lens,
+                    'decoder_output': decoder_output,
+                    'ctc_output': out_ctc,
+                    'loss': loss,
+                       }
+            add_args = {arg: val for arg, val in opt_args.items() if arg in self.cl_opt_args}
+            add_args['model'] = self
+            loss_cl = self.cl_method.compute_loss(**add_args)
+            if isinstance(loss_cl, tuple) and len(loss_cl) > 1:
+                loss_cl, stats_cl = loss_cl[0], loss_cl[1]
+                stats = {**stats, **stats_cl}
+            stats['loss_cl'] = loss_cl if isinstance(loss_cl, (int, float)) else loss_cl.detach()
+            # CL Method might have weight for CE loss
+            if hasattr(self.cl_method, 'ce_weight'):
+                old_loss = loss
+                loss = self.cl_method.ce_weight * loss + loss_cl 
+            else:
+                loss = loss + loss_cl
+
+        # Collect total loss stats
+        stats["loss"] = loss.detach()
+
+
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
         loss, stats, weight = force_gatherable((loss, stats, batch_size),
                                                loss.device if type(loss) is not float else speech.device)
         return loss, stats, weight
+
+
+    def forward_er(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+        text: torch.Tensor,
+        text_lengths: torch.Tensor,
+        src_text: Optional[torch.Tensor],
+        src_text_lengths: Optional[torch.Tensor],
+        return_args: List[str] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+        """Frontend + Encoder + Decoder + Calc loss
+
+        Args:
+            speech: (Batch, Length, ...)
+            speech_lengths: (Batch,)
+            text: (Batch, Length)
+            text_lengths: (Batch,)
+            src_text: (Batch, length)
+            src_text_lengths: (Batch,)
+        """
+        assert text_lengths.dim() == 1, text_lengths.shape
+        # Check that batch_size is unified
+        assert (
+            speech.shape[0]
+            == speech_lengths.shape[0]
+            == text.shape[0]
+            == text_lengths.shape[0]
+        ), (speech.shape, speech_lengths.shape, text.shape, text_lengths.shape)
+
+        # additional checks with valid src_text
+        if src_text is not None:
+            assert src_text_lengths.dim() == 1, src_text_lengths.shape
+            assert text.shape[0] == src_text.shape[0] == src_text_lengths.shape[0], (
+                text.shape,
+                src_text.shape,
+                src_text_lengths.shape,
+            )
+
+        batch_size = speech.shape[0]
+
+        # for data-parallel
+        text = text[:, : text_lengths.max()]
+        if src_text is not None:
+            src_text = src_text[:, : src_text_lengths.max()]
+
+        # Define stats to report
+        loss_ctc = 0.0
+        loss_asr_att = 0.0
+        loss_subs_att = 0.0 
+
+        # 1. Encoder
+        encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
+        intermediate_outs = None
+        if isinstance(encoder_out, tuple):
+            intermediate_outs = encoder_out[1]
+            encoder_out = encoder_out[0]
+
+        # 2. CTC branch
+        if self.ctc_weight > 0.0:
+            if self.task_labels or self.task_labels_v2:
+                src_text_ctc = src_text[:, 2:]
+                src_text_ctc_lengths = src_text_lengths - 2
+                mask = src_text_ctc[:, 0] != self.na
+            else:
+                mask = src_text.sum(-1) > 0
+                src_text_ctc = src_text
+                src_text_ctc_lengths = src_text_lengths
+
+            loss_ctc, cer_ctc, ctc_output = self._calc_ctc_loss(
+                encoder_out, encoder_out_lens, src_text_ctc, src_text_ctc_lengths, mask, return_output=True,
+            )
+
+        # 2a. Intermediate CTC (optional)
+        if self.interctc_weight != 0.0 and intermediate_outs is not None:
+            if self.task_labels or self.task_labels_v2:
+                src_text_ctc = src_text[:, 2:]
+                src_text_ctc_lengths = src_text_lengths - 2
+                mask = src_text_ctc[:, 0] != self.na
+            else:
+                mask = src_text.sum(-1) > 0
+                src_text_ctc = src_text
+                src_text_ctc_lengths = src_text_lengths
+
+            for layer_idx, intermediate_out in intermediate_outs:
+                # we assume intermediate_out has the same length & padding
+                # as those of encoder_out
+                loss_ic, cer_ic = self._calc_ctc_loss(
+                    intermediate_out, encoder_out_lens, src_text_ctc, src_text_ctc_lengths, mask
+                )
+                loss_interctc = loss_interctc + loss_ic
+
+            loss_interctc = loss_interctc / len(intermediate_outs)
+
+            # calculate whole encoder loss
+            loss_ctc = (1 - self.interctc_weight) * loss_ctc + self.interctc_weight * loss_interctc
+
+        # 3. Decoders
+        if True:  #self.asr_weight > 0:
+            if self.task_labels or self.task_labels_v2:
+                src_text = src_text[:, 1:]
+                src_text_lengths = src_text_lengths - 1
+                text = text[:, 1:]
+                text_lengths = text_lengths - 1
+                mask_asr = src_text[:, 1] != self.na
+                mask_subs = text[:, 1] != self.na
+            else:
+                mask_asr = src_text.sum(-1) > 0
+                mask_subs = text.sum(-1) > 0
+
+            assert not self.joint_decoder 
+            loss_asr_att, acc_asr_att, cer_asr_att, \
+            wer_asr_att, loss_subs_att, acc_subs_att, _, \
+            loss_subtitle_ctc, cer_subtitle_ctc, decoder_out = \
+            self._calc_att_loss(encoder_out, encoder_out_lens,
+                                        src_text, src_text_lengths,
+                                        text, text_lengths,
+                                        mask_asr, mask_subs, return_output=True)
+
+        # 4. Loss computation 
+        loss = self.asr_weight * (self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_asr_att) + self.subs_weight * (self.subtitle_ctc_weight * loss_subtitle_ctc + (1 - self.subtitle_ctc_weight) * loss_subs_att)
+
+        if return_args:
+            optional_args = {
+                    "ctc_out": ctc_output,
+                    "decoder_out": decoder_out,
+                    "encoder_out": encoder_out,
+                    "encoder_out_lens": encoder_out_lens,
+            }
+            for k in return_args:
+                assert k in optional_args.keys(), f"Invalid key: {k} is not in {return_args.keys()}"
+            r_args = [optional_args[k] for k in return_args]
+        else:
+            r_args = None
+        if r_args:
+            return (loss,) + tuple(r_args)
+        return loss
+
 
     def collect_feats(
         self,
@@ -555,6 +753,7 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
             ys_pad_lens_subs: torch.Tensor,
             mask_asr: torch.Tensor,
             mask_subs: torch.Tensor,
+            return_output: bool = False,
     ):
         # encoder_out: shape [BS, T, D]  e.g. [32, 47, 256]
 
@@ -694,6 +893,9 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
             else:
                 ys_hat_subs = subs_decoder_out_m.argmax(dim=-1)
                 bleu_subs_att = self.subtitle_error_calculator(ys_hat_subs.cpu(), ys_pad_subs_m.cpu())
+
+        if return_output: 
+            return loss_asr_att, acc_asr_att, cer_asr_att, wer_asr_att, loss_subs_att, acc_subs_att, bleu_subs_att, loss_subtitle_ctc, cer_subtitle_ctc, asr_decoder_out
 
         return loss_asr_att, acc_asr_att, cer_asr_att, wer_asr_att, loss_subs_att, acc_subs_att, bleu_subs_att, loss_subtitle_ctc, cer_subtitle_ctc
 
@@ -880,6 +1082,7 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
         mask: torch.Tensor,
+        return_output: bool = False,
     ):
         # Mask
         if mask.sum() == 0:
@@ -891,13 +1094,17 @@ class ESPnetSubtitleModelChained(AbsESPnetModel):
         ys_pad_lens_m = ys_pad_lens[mask]
 
         # Calc CTC loss
-        loss_ctc = self.ctc(encoder_out_m, encoder_out_lens_m, ys_pad_m, ys_pad_lens_m)
+        loss_ctc = self.ctc(encoder_out_m, encoder_out_lens_m, ys_pad_m, ys_pad_lens_m, return_output=return_output)
+        if return_output:
+            loss_ctc, out_ctc = loss_ctc[0], loss_ctc[1]
 
         # Calc CER using CTC
         cer_ctc = None
         if not self.training and self.asr_error_calculator is not None:
             ys_hat = self.ctc.argmax(encoder_out_m).data
             cer_ctc = self.asr_error_calculator(ys_hat.cpu(), ys_pad_m.cpu(), is_ctc=True)
+        if return_output:
+            return loss_ctc, cer_ctc, out_ctc
         return loss_ctc, cer_ctc
 
     def _calc_subtitle_ctc_loss(

@@ -7,6 +7,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+import inspect
+import yaml
 import numpy as np
 import torch
 from typeguard import check_argument_types
@@ -71,6 +73,9 @@ from espnet2.utils.types import float_or_none
 from espnet2.utils.types import int_or_none
 from espnet2.utils.types import str2bool
 from espnet2.utils.types import str_or_none
+
+# continual learning
+import espnet.nets.pytorch_backend.continual_learning3 as cl
 
 frontend_choices = ClassChoices(
     name="frontend",
@@ -182,6 +187,45 @@ subtitle_decoder_choices = ClassChoices(
     optional=True,
 )
 
+# continual learning
+cl_choices = ClassChoices(
+        "cl_method",
+        classes=dict(
+            er=cl.ER,
+            kd=cl.KD,
+            svr=cl.SVR,
+        ),
+        type_check=cl.CLMethod,
+        default=None,
+        optional=True,
+)
+
+# Returns extra arguments for the CL method
+def get_cl_args(args, cl_method):
+    import inspect  # to get init args of cl method
+    if len(args.init_param) > 0:
+        init_config_file = "/".join(args.init_param[0].split("/")[:-1]) + "/config.yaml"
+        with open(init_config_file, 'r') as f:
+            config = yaml.safe_load(f)
+    else:
+        config = {'init_param': ""}
+    opt_args = {
+            'accum_grad': args.accum_grad,
+            'old_init_param': config['init_param'],
+            'init_param': args.init_param,
+            'ctc_weight': args.model_conf['ctc_weight'] if 'ctc_weight' in args.model_conf.keys() else 0.0, 
+            'outdir': args.output_dir, 
+               }
+    cl_method_args = inspect.signature(cl_method.__init__).parameters
+    return {arg: val for arg, val in opt_args.items()
+            if arg in cl_method_args}
+
+def has_argument(func, arg_name):
+    return arg_name in inspect.signature(func).parameters
+
+
+
+
 
 class SubtitleTask(AbsTask):
     # If you need more than one optimizers, change this value
@@ -274,6 +318,13 @@ class SubtitleTask(AbsTask):
             action=NestedDictAction,
             default=get_default_kwargs(ESPnetSubtitleModelChained),
             help="The keyword arguments for model class.",
+        )
+
+        group.add_argument(
+            "--cl_method_conf",
+            action=NestedDictAction,
+            default=None,
+            help="Configuration of CL method (if applicable)"
         )
 
         group = parser.add_argument_group(description="Preprocess related")
@@ -572,6 +623,23 @@ class SubtitleTask(AbsTask):
         else:
             subtitle_decoder = None
 
+        # 7. Continual Learning 
+        if getattr(args, "cl_method", None):
+            cl_method_class = cl_choices.get_class(args.cl_method)
+            device="cuda" if args.ngpu > 0 and torch.cuda.is_available() else "cpu"
+            extra_args = get_cl_args(args, cl_method_class)
+            if args.cl_method_conf is None:
+                args.cl_method_conf = {**extra_args}
+            else:
+                args.cl_method_conf = {**extra_args, **args.cl_method_conf}
+            cl_method_args = args.cl_method_conf.copy()
+            params = inspect.signature(cl_method_class.__init__).parameters
+            param_names = [key for key, param in params.items() if key != 'self']
+            logging.info("CL Method has the following arguments for init: %s" % str(param_names))
+            cl_method = cl_method_class(device=device, **cl_method_args)
+        else:
+            cl_method = None
+
         # 8. Build model
         model = ESPnetSubtitleModelChained(
             vocab_size=vocab_size,
@@ -589,6 +657,7 @@ class SubtitleTask(AbsTask):
             subtitle_decoder=subtitle_decoder,
             token_list=token_list,
             src_token_list=src_token_list,
+            cl_method=cl_method,
             **args.model_conf,
         )
 
